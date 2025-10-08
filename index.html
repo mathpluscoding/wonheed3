@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D3 Choropleth — Compare US States (CSV-ready)</title>
+  <style>
+    :root { --bg: #0b1020; --fg: #e8ecf1; --muted:#98a2b3; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; background: var(--bg); color: var(--fg); }
+    header { padding: 20px 24px; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    .sub { color: var(--muted); font-size: 14px; }
+    #viz { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 0 16px 24px; }
+    .wrap { background: #0f162f; border: 1px solid #1e2a57; border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .legend { display:flex; align-items:center; gap:6px; font-size:12px; color:#cbd5e1; }
+    .legend .swatch { width:18px; height:14px; border:1px solid rgba(255,255,255,.2);}    
+    .tooltip { position: fixed; pointer-events: none; background: rgba(15,22,47,.95); color: #e5e7eb; padding: 8px 10px; border: 1px solid #24346f; border-radius: 10px; font-size: 12px; transform: translate(-50%, calc(-100% - 10px)); white-space: nowrap; z-index: 10; opacity: 0; transition: opacity .12s ease; }
+    .note { color:#94a3b8; font-size:12px; margin-top:8px; }
+    a { color:#93c5fd; }
+    .footer { color:#94a3b8; font-size:12px; padding: 0 24px 20px; }
+    svg { width: 100%; height: auto; display:block; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Comparison of U.S. States — Choropleth Map (CSV in same folder)</h1>
+    <div class="sub">Place a file named <code>data.csv</code> in the same folder as this HTML page. The CSV should have columns <code>state,value</code>.</div>
+  </header>
+
+  <div id="viz">
+    <div class="wrap">
+      <div id="legend" class="legend" aria-label="color legend"></div>
+      <svg id="map" viewBox="0 0 975 610" aria-label="US states choropleth"></svg>
+      <div class="note">Example <code>data.csv</code>:<br>state,value<br>CA,73<br>TX,55<br>NY,68<br>FL,62<br>IL,57</div>
+    </div>
+  </div>
+
+  <div class="footer">Built with <a href="https://d3js.org/" target="_blank" rel="noreferrer noopener">D3 v7</a> and <a href="https://github.com/topojson/us-atlas" target="_blank" rel="noreferrer noopener">us-atlas</a>.</div>
+
+  <!-- D3 & helpers -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+
+  <script>
+    const svg = d3.select('#map');
+    const g = svg.append('g');
+    const tooltip = d3.select('body').append('div').attr('class','tooltip');
+
+    const stateMeta = new Map([
+      ["01", {abbr:"AL", name:"Alabama"}], ["02", {abbr:"AK", name:"Alaska"}], ["04", {abbr:"AZ", name:"Arizona"}],
+      ["05", {abbr:"AR", name:"Arkansas"}], ["06", {abbr:"CA", name:"California"}], ["08", {abbr:"CO", name:"Colorado"}],
+      ["09", {abbr:"CT", name:"Connecticut"}], ["10", {abbr:"DE", name:"Delaware"}], ["11", {abbr:"DC", name:"District of Columbia"}],
+      ["12", {abbr:"FL", name:"Florida"}], ["13", {abbr:"GA", name:"Georgia"}], ["15", {abbr:"HI", name:"Hawaii"}],
+      ["16", {abbr:"ID", name:"Idaho"}], ["17", {abbr:"IL", name:"Illinois"}], ["18", {abbr:"IN", name:"Indiana"}],
+      ["19", {abbr:"IA", name:"Iowa"}], ["20", {abbr:"KS", name:"Kansas"}], ["21", {abbr:"KY", name:"Kentucky"}],
+      ["22", {abbr:"LA", name:"Louisiana"}], ["23", {abbr:"ME", name:"Maine"}], ["24", {abbr:"MD", name:"Maryland"}],
+      ["25", {abbr:"MA", name:"Massachusetts"}], ["26", {abbr:"MI", name:"Michigan"}], ["27", {abbr:"MN", name:"Minnesota"}],
+      ["28", {abbr:"MS", name:"Mississippi"}], ["29", {abbr:"MO", name:"Missouri"}], ["30", {abbr:"MT", name:"Montana"}],
+      ["31", {abbr:"NE", name:"Nebraska"}], ["32", {abbr:"NV", name:"Nevada"}], ["33", {abbr:"NH", name:"New Hampshire"}],
+      ["34", {abbr:"NJ", name:"New Jersey"}], ["35", {abbr:"NM", name:"New Mexico"}], ["36", {abbr:"NY", name:"New York"}],
+      ["37", {abbr:"NC", name:"North Carolina"}], ["38", {abbr:"ND", name:"North Dakota"}], ["39", {abbr:"OH", name:"Ohio"}],
+      ["40", {abbr:"OK", name:"Oklahoma"}], ["41", {abbr:"OR", name:"Oregon"}], ["42", {abbr:"PA", name:"Pennsylvania"}],
+      ["44", {abbr:"RI", name:"Rhode Island"}], ["45", {abbr:"SC", name:"South Carolina"}], ["46", {abbr:"SD", name:"South Dakota"}],
+      ["47", {abbr:"TN", name:"Tennessee"}], ["48", {abbr:"TX", name:"Texas"}], ["49", {abbr:"UT", name:"Utah"}],
+      ["50", {abbr:"VT", name:"Vermont"}], ["51", {abbr:"VA", name:"Virginia"}], ["53", {abbr:"WA", name:"Washington"}],
+      ["54", {abbr:"WV", name:"West Virginia"}], ["55", {abbr:"WI", name:"Wisconsin"}], ["56", {abbr:"WY", name:"Wyoming"}]
+    ]);
+    const abbrByName = new Map(Array.from(stateMeta.values()).map(o => [o.name.toLowerCase(), o.abbr]));
+
+    let color = d3.scaleSequential(d3.interpolateYlGnBu).domain([0, 100]);
+
+    function renderLegend(domain=[0,100]) {
+      const [min,max] = domain;
+      const steps = d3.range(0, 1.0001, 0.2).map(t => Math.round(min + t*(max-min)));
+      const l = d3.select('#legend');
+      l.selectAll('*').remove();
+      steps.forEach(s => {
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = color(s);
+        l.node().appendChild(sw);
+      });
+      l.append('span').text(`${min}`);
+      l.append('span').style('margin-left','6px').text(`${max}`);
+    }
+
+    const US_URL = 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
+    let statesFeatures;
+    let currentValues = new Map();
+
+    d3.json(US_URL).then(us => {
+      statesFeatures = topojson.feature(us, us.objects.states).features;
+      const mesh = topojson.mesh(us, us.objects.states, (a, b) => a !== b);
+
+      g.append('path')
+        .attr('fill', 'none')
+        .attr('stroke', '#0b122a')
+        .attr('stroke-width', 1)
+        .attr('d', d3.geoPath(d3.geoAlbersUsa()));
+
+      g.append('path')
+        .attr('fill', 'none')
+        .attr('stroke', '#0b122a')
+        .attr('stroke-width', 1)
+        .attr('pointer-events','none')
+        .attr('d', d3.geoPath(d3.geoAlbersUsa())(mesh));
+
+      g.selectAll('path.state')
+        .data(statesFeatures)
+        .join('path')
+        .attr('class', 'state')
+        .attr('d', d3.geoPath(d3.geoAlbersUsa()))
+        .attr('fill', '#2c3e75')
+        .attr('stroke', '#0b122a')
+        .attr('stroke-width', 0.6)
+        .on('mousemove', (event, d) => {
+          const fips = String(d.id).padStart(2,'0');
+          const meta = stateMeta.get(fips) || {abbr:'', name:'Unknown'};
+          const val = currentValues.get(meta.abbr);
+          tooltip.style('opacity', 1)
+            .html(`<strong>${meta.name}</strong> (${meta.abbr})<br/>Value: ${val ?? 'n/a'}`)
+            .style('left', (event.clientX) + 'px')
+            .style('top', (event.clientY - 10) + 'px');
+        })
+        .on('mouseleave', () => tooltip.style('opacity', 0));
+
+      renderLegend();
+
+      // Load local CSV named data.csv
+      d3.text('data.csv').then(text => {
+        const rows = d3.csvParse(text);
+        const values = new Map();
+        rows.forEach(row => {
+          let key = row.state?.trim();
+          if (!key) return;
+          if (key.length !== 2) key = abbrByName.get(key.toLowerCase());
+          if (key) {
+            const v = +row.value;
+            if (Number.isFinite(v)) values.set(key.toUpperCase(), v);
+          }
+        });
+        currentValues = values;
+        const vals = Array.from(values.values());
+        const min = d3.min(vals) ?? 0, max = d3.max(vals) ?? 100;
+        color = d3.scaleSequential(d3.interpolateYlGnBu).domain([min, max]);
+        renderLegend([min,max]);
+
+        g.selectAll('path.state')
+          .transition().duration(600)
+          .attr('fill', d => {
+            const fips = String(d.id).padStart(2,'0');
+            const m = stateMeta.get(fips); if (!m) return '#2c3e75';
+            const val = currentValues.get(m.abbr);
+            return (val == null) ? '#2c3e75' : color(val);
+          });
+      });
+    });
+  </script>
+</body>
+</html>
